@@ -1,4 +1,9 @@
 #!/bin/sh
-# MoRealm build script — delegates to local Gradle installation
-GRADLE_HOME="C:/Users/test/.gradle/wrapper/dists/gradle-8.14-all/8mguqc37c200i71ledpgw8n5m/gradle-8.14"
-exec "$GRADLE_HOME/bin/gradle" "$@"
+# Portable Gradle wrapper launcher for the standalone Vietnamese branch.
+APP_HOME=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1
+if [ -n "$JAVA_HOME" ]; then
+    JAVACMD="$JAVA_HOME/bin/java"
+else
+    JAVACMD="java"
+fi
+exec "$JAVACMD" -Xmx64m -Xms64m -Dorg.gradle.appname=gradlew -jar "$APP_HOME/gradle/wrapper/gradle-wrapper.jar" "$@"
