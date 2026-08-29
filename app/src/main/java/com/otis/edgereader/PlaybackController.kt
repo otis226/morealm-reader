@@ -13,27 +13,45 @@ import java.util.concurrent.atomic.AtomicInteger
 
 class PlaybackController(
     private val onStatus: (String) -> Unit,
+    private val onWord: (Int, Int) -> Unit,
 ) {
+    private data class Chunk(
+        val start: Int,
+        val end: Int,
+        val text: String,
+    )
+
+    private data class TimedRange(
+        val start: Int,
+        val end: Int,
+        val offsetMs: Long,
+        val durationMs: Long,
+    )
+
     private val main = Handler(Looper.getMainLooper())
-    private val workers = Executors.newFixedThreadPool(2)
+    private val workers = Executors.newFixedThreadPool(3)
     private val edge = EdgeTtsClient()
     private val generation = AtomicInteger(0)
-    private val prefetched = ConcurrentHashMap<Int, ByteArray>()
-    private val cache = object : LinkedHashMap<String, ByteArray>(24, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, ByteArray>?): Boolean = size > 24
+    private val prefetched = ConcurrentHashMap<Int, EdgeTtsClient.SynthesisResult>()
+    private val cache = object : LinkedHashMap<String, EdgeTtsClient.SynthesisResult>(24, 0.75f, true) {
+        override fun removeEldestEntry(
+            eldest: MutableMap.MutableEntry<String, EdgeTtsClient.SynthesisResult>?
+        ): Boolean = size > 24
     }
 
-    @Volatile private var chunks: List<String> = emptyList()
+    @Volatile private var chunks: List<Chunk> = emptyList()
     @Volatile private var voice: String = "vi-VN-HoaiMyNeural"
     @Volatile private var speed: Float = 0.95f
-    @Volatile private var pitchHz: Int = -30
+    @Volatile private var pitchHz: Int = -60
     @Volatile private var paused = false
     private var player: MediaPlayer? = null
+    private var progressRunnable: Runnable? = null
+    private var lastHighlightedStart = -1
 
     fun start(text: String, voice: String, speed: Float, pitchHz: Int) {
         val clean = text.trim()
         if (clean.isEmpty()) {
-            status("Hãy dán văn bản trước")
+            status("Clipboard chưa có văn bản")
             return
         }
         val gen = generation.incrementAndGet()
@@ -44,10 +62,12 @@ class PlaybackController(
         this.speed = speed
         this.pitchHz = pitchHz
         paused = false
-        status("Đang tạo đoạn đầu…")
+        lastHighlightedStart = -1
+        highlight(-1, -1)
+        status("Đang tạo giọng…")
         synthesizeAndPlay(0, gen)
-        // Chuẩn bị đoạn thứ hai ngay lập tức trong worker còn lại để giảm khoảng ngắt.
         prefetch(1, gen)
+        prefetch(2, gen)
     }
 
     fun pause() {
@@ -73,6 +93,7 @@ class PlaybackController(
         prefetched.clear()
         paused = false
         releasePlayer()
+        highlight(-1, -1)
         status("Đã dừng")
     }
 
@@ -84,19 +105,22 @@ class PlaybackController(
     private fun synthesizeAndPlay(index: Int, gen: Int) {
         if (gen != generation.get()) return
         if (index >= chunks.size) {
+            highlight(-1, -1)
             status("Đã đọc xong")
             return
         }
         prefetched.remove(index)?.let {
-            playBytes(it, index, gen, 0L)
+            playResult(it, index, gen, 0L)
             return
         }
         workers.submit {
             val started = System.currentTimeMillis()
             try {
-                val bytes = synthesizeCached(chunks[index])
+                val result = synthesizeCached(chunks[index].text)
                 if (gen != generation.get()) return@submit
-                main.post { playBytes(bytes, index, gen, System.currentTimeMillis() - started) }
+                main.post {
+                    playResult(result, index, gen, System.currentTimeMillis() - started)
+                }
             } catch (t: Throwable) {
                 if (gen != generation.get()) return@submit
                 status("Lỗi ${shortVoiceName()}: ${t.message ?: "không tạo được âm thanh"}")
@@ -104,9 +128,17 @@ class PlaybackController(
         }
     }
 
-    private fun playBytes(bytes: ByteArray, index: Int, gen: Int, synthMs: Long) {
+    private fun playResult(
+        result: EdgeTtsClient.SynthesisResult,
+        index: Int,
+        gen: Int,
+        synthMs: Long,
+    ) {
         if (gen != generation.get()) return
         releasePlayer()
+        val chunk = chunks[index]
+        val timedRanges = mapWordRanges(chunk, result.words)
+
         val mp = MediaPlayer()
         mp.setAudioAttributes(
             AudioAttributes.Builder()
@@ -114,7 +146,7 @@ class PlaybackController(
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                 .build()
         )
-        mp.setDataSource(ByteArraySource(bytes))
+        mp.setDataSource(ByteArraySource(result.audio))
         mp.setOnPreparedListener {
             if (gen != generation.get()) {
                 it.release()
@@ -123,15 +155,23 @@ class PlaybackController(
             it.start()
             paused = false
             val prep = if (index == 0 && synthMs > 0) " · ${synthMs}ms" else ""
-            status("Đang đọc ${index + 1}/${chunks.size}$prep")
-            // Giữ trước hai đoạn kế tiếp nếu có.
+            val tracking = if (timedRanges.isEmpty()) " · theo đoạn" else " · theo từ"
+            status("Đang đọc ${index + 1}/${chunks.size}$prep$tracking")
+            if (timedRanges.isEmpty()) {
+                highlight(chunk.start, chunk.end)
+            } else {
+                startWordTracking(it, timedRanges, gen)
+            }
             prefetch(index + 1, gen)
             prefetch(index + 2, gen)
+            prefetch(index + 3, gen)
         }
         mp.setOnCompletionListener {
+            stopProgressLoop()
             if (gen == generation.get()) synthesizeAndPlay(index + 1, gen)
         }
         mp.setOnErrorListener { _, what, extra ->
+            stopProgressLoop()
             if (gen == generation.get()) status("Lỗi phát âm thanh ($what/$extra)")
             true
         }
@@ -139,24 +179,77 @@ class PlaybackController(
         mp.prepareAsync()
     }
 
+    private fun startWordTracking(mp: MediaPlayer, ranges: List<TimedRange>, gen: Int) {
+        stopProgressLoop()
+        var lastIndex = -1
+        val runner = object : Runnable {
+            override fun run() {
+                if (gen != generation.get() || player !== mp) return
+                val pos = runCatching { mp.currentPosition.toLong() }.getOrDefault(0L) + TRACKING_LEAD_MS
+                var found = lastIndex.coerceAtLeast(0)
+                while (found + 1 < ranges.size && ranges[found + 1].offsetMs <= pos) {
+                    found++
+                }
+                if (found < ranges.size && ranges[found].offsetMs <= pos && found != lastIndex) {
+                    lastIndex = found
+                    val r = ranges[found]
+                    highlight(r.start, r.end)
+                }
+                if (gen == generation.get() && player === mp) {
+                    main.postDelayed(this, if (paused) 140L else 45L)
+                }
+            }
+        }
+        progressRunnable = runner
+        main.post(runner)
+    }
+
+    private fun stopProgressLoop() {
+        progressRunnable?.let { main.removeCallbacks(it) }
+        progressRunnable = null
+    }
+
+    private fun mapWordRanges(
+        chunk: Chunk,
+        boundaries: List<EdgeTtsClient.WordBoundary>,
+    ): List<TimedRange> {
+        if (boundaries.isEmpty()) return emptyList()
+        val out = ArrayList<TimedRange>(boundaries.size)
+        var searchFrom = 0
+        for (b in boundaries) {
+            val word = b.text.trim()
+            if (word.isEmpty()) continue
+            var local = chunk.text.indexOf(word, startIndex = searchFrom, ignoreCase = false)
+            if (local < 0) {
+                local = chunk.text.indexOf(word, startIndex = searchFrom, ignoreCase = true)
+            }
+            if (local < 0) continue
+            val start = chunk.start + local
+            val end = (start + word.length).coerceAtMost(chunk.end)
+            out.add(TimedRange(start, end, b.offsetMs, b.durationMs))
+            searchFrom = local + word.length
+        }
+        return out
+    }
+
     private fun prefetch(index: Int, gen: Int) {
         if (index >= chunks.size || gen != generation.get() || prefetched.containsKey(index)) return
         workers.submit {
             try {
-                val bytes = synthesizeCached(chunks[index])
-                if (gen == generation.get()) prefetched[index] = bytes
+                val result = synthesizeCached(chunks[index].text)
+                if (gen == generation.get()) prefetched[index] = result
             } catch (_: Throwable) {
-                // Đến lượt đoạn này sẽ thử lại và hiển thị lỗi chi tiết nếu vẫn thất bại.
+                // Đến lượt đoạn này sẽ thử lại và hiển thị lỗi nếu vẫn thất bại.
             }
         }
     }
 
-    private fun synthesizeCached(text: String): ByteArray {
+    private fun synthesizeCached(text: String): EdgeTtsClient.SynthesisResult {
         val key = cacheKey(text)
         synchronized(cache) { cache[key]?.let { return it } }
-        val bytes = edge.synthesize(text, voice, speed, pitchHz)
-        synchronized(cache) { cache[key] = bytes }
-        return bytes
+        val result = edge.synthesize(text, voice, speed, pitchHz)
+        synchronized(cache) { cache[key] = result }
+        return result
     }
 
     private fun cacheKey(text: String): String = buildString {
@@ -172,6 +265,7 @@ class PlaybackController(
     private fun shortVoiceName(): String = if (voice.contains("NamMinh")) "Nam Minh" else "Hoài My"
 
     private fun releasePlayer() {
+        stopProgressLoop()
         player?.let {
             runCatching { it.stop() }
             runCatching { it.reset() }
@@ -184,66 +278,62 @@ class PlaybackController(
         main.post { onStatus(text) }
     }
 
-    /**
-     * Tối ưu cảm giác bấm Đọc:
-     * - đoạn đầu = đúng một câu (hoặc tối đa ~650 byte) để Edge trả audio thật sớm;
-     * - các đoạn sau gom lớn hơn (~1700 byte) để giảm số lần bắt tay WebSocket;
-     * - đoạn 2 được synth song song ngay khi đoạn 1 bắt đầu tạo.
-     */
-    private fun splitText(text: String): List<String> {
-        val normalized = text.replace("\r\n", "\n").replace('\r', '\n')
-        val sentences = normalized.split(Regex("(?<=[.!?…;:。！？])\\s+|\\n+"))
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
-        if (sentences.isEmpty()) return listOf(text)
-
-        val out = ArrayList<String>()
-        val firstParts = splitByBytes(sentences.first(), FIRST_CHUNK_BYTES)
-        out.add(firstParts.first())
-
-        val remaining = ArrayList<String>()
-        remaining.addAll(firstParts.drop(1))
-        remaining.addAll(sentences.drop(1))
-
-        val current = StringBuilder()
-        fun flush() {
-            if (current.isNotEmpty()) {
-                out.add(current.toString().trim())
-                current.clear()
-            }
-        }
-
-        for (sentence in remaining) {
-            for (part in splitByBytes(sentence, NORMAL_CHUNK_BYTES)) {
-                val candidate = if (current.isEmpty()) part else "$current $part"
-                if (candidate.toByteArray(Charsets.UTF_8).size > NORMAL_CHUNK_BYTES) flush()
-                if (current.isNotEmpty()) current.append(' ')
-                current.append(part)
-            }
-        }
-        flush()
-        return out.filter { it.isNotBlank() }
+    private fun highlight(start: Int, end: Int) {
+        if (start == lastHighlightedStart && start >= 0) return
+        lastHighlightedStart = start
+        main.post { onWord(start, end) }
     }
 
-    private fun splitByBytes(text: String, maxBytes: Int): List<String> {
-        if (text.toByteArray(Charsets.UTF_8).size <= maxBytes) return listOf(text)
-        val words = text.split(Regex("\\s+"))
-        val out = ArrayList<String>()
-        val current = StringBuilder()
-        fun flush() {
-            if (current.isNotEmpty()) {
-                out.add(current.toString())
-                current.clear()
+    /**
+     * Chia trực tiếp trên chuỗi hiển thị để offset highlight luôn khớp văn bản.
+     * Đoạn đầu ngắn để giảm latency; các đoạn sau dài hơn để giảm số lần gọi Edge.
+     */
+    private fun splitText(text: String): List<Chunk> {
+        val out = ArrayList<Chunk>()
+        var pos = 0
+        var chunkIndex = 0
+        while (pos < text.length) {
+            while (pos < text.length && text[pos].isWhitespace()) pos++
+            if (pos >= text.length) break
+
+            val maxChars = if (chunkIndex == 0) FIRST_CHUNK_CHARS else NORMAL_CHUNK_CHARS
+            val hardEnd = (pos + maxChars).coerceAtMost(text.length)
+            var end = if (chunkIndex == 0) {
+                firstSentenceEnd(text, pos, hardEnd) ?: bestBreak(text, pos, hardEnd)
+            } else {
+                bestBreak(text, pos, hardEnd)
+            }
+            if (end <= pos) end = hardEnd
+
+            out.add(Chunk(pos, end, text.substring(pos, end)))
+            pos = end
+            chunkIndex++
+        }
+        return out.ifEmpty { listOf(Chunk(0, text.length, text)) }
+    }
+
+    private fun firstSentenceEnd(text: String, start: Int, hardEnd: Int): Int? {
+        for (i in start until hardEnd) {
+            val c = text[i]
+            if (c == '.' || c == '!' || c == '?' || c == '…' || c == '\n') {
+                return i + 1
             }
         }
-        for (word in words) {
-            val candidate = if (current.isEmpty()) word else "$current $word"
-            if (candidate.toByteArray(Charsets.UTF_8).size > maxBytes && current.isNotEmpty()) flush()
-            if (current.isNotEmpty()) current.append(' ')
-            current.append(word)
+        return null
+    }
+
+    private fun bestBreak(text: String, start: Int, hardEnd: Int): Int {
+        if (hardEnd >= text.length) return text.length
+        for (i in hardEnd - 1 downTo start + 40) {
+            val c = text[i]
+            if (c == '\n' || c == '.' || c == '!' || c == '?' || c == '…' || c == ';' || c == ':') {
+                return i + 1
+            }
         }
-        flush()
-        return out.ifEmpty { listOf(text) }
+        for (i in hardEnd - 1 downTo start + 20) {
+            if (text[i].isWhitespace()) return i + 1
+        }
+        return hardEnd
     }
 
     private class ByteArraySource(private val data: ByteArray) : MediaDataSource() {
@@ -259,7 +349,8 @@ class PlaybackController(
     }
 
     companion object {
-        private const val FIRST_CHUNK_BYTES = 650
-        private const val NORMAL_CHUNK_BYTES = 1700
+        private const val FIRST_CHUNK_CHARS = 180
+        private const val NORMAL_CHUNK_CHARS = 620
+        private const val TRACKING_LEAD_MS = 70L
     }
 }
