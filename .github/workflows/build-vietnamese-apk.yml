@@ -1,5 +1,6 @@
 name: Build Vietnamese APK
 
+# standalone revision: portable Gradle wrapper
 on:
   push:
     branches:
