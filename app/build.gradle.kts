@@ -26,7 +26,11 @@ android {
 }
 
 dependencies {
+    val media3Version = "1.11.0"
+
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("androidx.media3:media3-exoplayer:$media3Version")
+    implementation("androidx.media3:media3-session:$media3Version")
 
     testImplementation("junit:junit:4.13.2")
 }
