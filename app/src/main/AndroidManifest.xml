@@ -11,7 +11,7 @@
         android:theme="@android:style/Theme.Material.Light.NoActionBar"
         android:usesCleartextTraffic="false">
         <activity
-            android:name=".MainActivity"
+            android:name=".V1ReaderActivity"
             android:exported="true"
             android:screenOrientation="unspecified">
             <intent-filter>
