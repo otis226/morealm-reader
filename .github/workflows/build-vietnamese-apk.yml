@@ -1,5 +1,6 @@
 name: Build Vietnamese APK
 
+# rebuild: expanded Vietnamese primary UI
 on:
   push:
     branches:
