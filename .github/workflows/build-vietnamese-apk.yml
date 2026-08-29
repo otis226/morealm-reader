@@ -32,7 +32,9 @@ jobs:
           validate-wrappers: false
 
       - name: Apply Vietnamese localization
-        run: python3 tools/apply_vietnamese.py
+        run: |
+          python3 tools/apply_vietnamese.py
+          sed -i "s/today's reading time/reading time for today/g" app/src/main/res/values-en/strings.xml
 
       - name: Build debug APK
         run: gradle assembleDebug --no-daemon
