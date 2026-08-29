@@ -6,9 +6,11 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
+import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.security.MessageDigest
 import java.text.SimpleDateFormat
+import java.util.Collections
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
@@ -18,6 +20,17 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
 class EdgeTtsClient {
+    data class WordBoundary(
+        val text: String,
+        val offsetMs: Long,
+        val durationMs: Long,
+    )
+
+    data class SynthesisResult(
+        val audio: ByteArray,
+        val words: List<WordBoundary>,
+    )
+
     private val client = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
@@ -27,7 +40,7 @@ class EdgeTtsClient {
     @Volatile
     private var clockSkewSeconds: Long = 0L
 
-    fun synthesize(text: String, voice: String, speed: Float, pitchHz: Int): ByteArray {
+    fun synthesize(text: String, voice: String, speed: Float, pitchHz: Int): SynthesisResult {
         var last: Throwable? = null
         repeat(3) { attempt ->
             try {
@@ -48,7 +61,12 @@ class EdgeTtsClient {
         throw last ?: IllegalStateException("Edge TTS không phản hồi")
     }
 
-    private fun synthesizeOnce(text: String, voice: String, speed: Float, pitchHz: Int): ByteArray {
+    private fun synthesizeOnce(
+        text: String,
+        voice: String,
+        speed: Float,
+        pitchHz: Int,
+    ): SynthesisResult {
         val requestId = UUID.randomUUID().toString().replace("-", "")
         val connectionId = UUID.randomUUID().toString().replace("-", "")
         val gec = generateSecMsGec()
@@ -67,6 +85,7 @@ class EdgeTtsClient {
 
         val done = CountDownLatch(1)
         val audio = ByteArrayOutputStream()
+        val words = Collections.synchronizedList(mutableListOf<WordBoundary>())
         val error = AtomicReference<Throwable?>(null)
 
         val socket = client.newWebSocket(request, object : WebSocketListener() {
@@ -74,7 +93,7 @@ class EdgeTtsClient {
                 val config = "X-Timestamp:${edgeTimestamp()}\r\n" +
                     "Content-Type:application/json; charset=utf-8\r\n" +
                     "Path:speech.config\r\n\r\n" +
-                    "{\"context\":{\"synthesis\":{\"audio\":{\"metadataoptions\":{\"sentenceBoundaryEnabled\":\"false\",\"wordBoundaryEnabled\":\"false\"},\"outputFormat\":\"audio-24khz-48kbitrate-mono-mp3\"}}}}\r\n"
+                    "{\"context\":{\"synthesis\":{\"audio\":{\"metadataoptions\":{\"sentenceBoundaryEnabled\":\"false\",\"wordBoundaryEnabled\":\"true\"},\"outputFormat\":\"audio-24khz-48kbitrate-mono-mp3\"}}}}\r\n"
                 webSocket.send(config)
 
                 val pct = ((speed.coerceIn(0.5f, 2.0f) - 1f) * 100f).toInt()
@@ -104,7 +123,12 @@ class EdgeTtsClient {
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                if (text.contains("Path:turn.end", ignoreCase = true)) done.countDown()
+                if (text.contains("Path:audio.metadata", ignoreCase = true)) {
+                    parseWordMetadata(text, words)
+                }
+                if (text.contains("Path:turn.end", ignoreCase = true)) {
+                    done.countDown()
+                }
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
@@ -135,7 +159,33 @@ class EdgeTtsClient {
         if (result.isEmpty()) {
             throw IllegalStateException("Edge không trả âm thanh cho voice $voice")
         }
-        return result
+        val boundarySnapshot = synchronized(words) { words.toList() }
+            .sortedBy { it.offsetMs }
+        return SynthesisResult(result, boundarySnapshot)
+    }
+
+    private fun parseWordMetadata(message: String, out: MutableList<WordBoundary>) {
+        runCatching {
+            val separator = message.indexOf("\r\n\r\n")
+            if (separator < 0 || separator + 4 >= message.length) return
+            val body = message.substring(separator + 4).trim()
+            if (body.isBlank()) return
+            val metadata = JSONObject(body).optJSONArray("Metadata") ?: return
+            for (i in 0 until metadata.length()) {
+                val item = metadata.optJSONObject(i) ?: continue
+                if (!item.optString("Type").equals("WordBoundary", ignoreCase = true)) continue
+                val data = item.optJSONObject("Data") ?: continue
+                val word = data.optJSONObject("text")?.optString("Text").orEmpty()
+                if (word.isBlank()) continue
+                out.add(
+                    WordBoundary(
+                        text = word,
+                        offsetMs = data.optLong("Offset", 0L) / 10_000L,
+                        durationMs = data.optLong("Duration", 0L) / 10_000L,
+                    )
+                )
+            }
+        }
     }
 
     private fun cleanText(input: String): String = buildString(input.length) {
