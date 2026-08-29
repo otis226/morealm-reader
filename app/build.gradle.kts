@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "com.otis.edgereader"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.otis.edgereader"
