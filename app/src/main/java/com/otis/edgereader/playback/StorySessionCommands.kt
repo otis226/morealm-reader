@@ -11,6 +11,7 @@ object StorySessionCommands {
     const val NEXT_CHAPTER = "story.next_chapter"
     const val PREVIOUS_CHAPTER = "story.previous_chapter"
     const val SET_TTS = "story.set_tts"
+    const val SET_AMBIENT = "story.set_ambient"
     const val GET_STATE = "story.get_state"
     const val STATE_CHANGED = "story.state_changed"
     const val SEGMENT_CHANGED = "story.segment_changed"
@@ -36,6 +37,9 @@ object StorySessionCommands {
     const val KEY_WORD_OFFSETS_MS = "word_offsets_ms"
     const val KEY_WORD_DURATIONS_MS = "word_durations_ms"
     const val KEY_SLEEP_MINUTES = "sleep_minutes"
+    const val KEY_AMBIENT_URI = "ambient_uri"
+    const val KEY_AMBIENT_LABEL = "ambient_label"
+    const val KEY_AMBIENT_VOLUME = "ambient_volume"
 
     val customCommands: List<SessionCommand> = listOf(
         OPEN_BOOK,
@@ -45,6 +49,7 @@ object StorySessionCommands {
         NEXT_CHAPTER,
         PREVIOUS_CHAPTER,
         SET_TTS,
+        SET_AMBIENT,
         GET_STATE,
         SET_SLEEP_TIMER,
     ).map { SessionCommand(it, Bundle.EMPTY) }
