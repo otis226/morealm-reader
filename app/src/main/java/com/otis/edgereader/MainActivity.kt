@@ -20,7 +20,8 @@ class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var speedLabel: TextView
     private lateinit var voiceSpinner: Spinner
-    private var speed = 1.0f
+    private lateinit var toneSpinner: Spinner
+    private var speed = 0.95f
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -39,11 +40,11 @@ class MainActivity : Activity() {
             text = "Đọc văn bản bằng Edge"
             textSize = 24f
             setTextColor(Color.rgb(30, 30, 30))
-            setPadding(0, 0, 0, dp(10))
+            setPadding(0, 0, 0, dp(8))
         })
 
         root.addView(TextView(this).apply {
-            text = "Dán truyện vào ô dưới, chọn giọng rồi bấm Đọc."
+            text = "Dán truyện, chọn giọng và độ ấm rồi bấm Đọc."
             textSize = 14f
             setTextColor(Color.DKGRAY)
             setPadding(0, 0, 0, dp(12))
@@ -57,47 +58,66 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.WHITE)
             textSize = 17f
         }
-        root.addView(textInput, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            0,
-            1f,
-        ))
+        root.addView(
+            textInput,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+        )
 
         val voiceRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(12), 0, 0)
+            setPadding(0, dp(10), 0, 0)
         }
         voiceRow.addView(TextView(this).apply {
             text = "Giọng:"
             textSize = 16f
         })
-        voiceSpinner = Spinner(this)
-        voiceSpinner.adapter = ArrayAdapter(
-            this,
-            android.R.layout.simple_spinner_dropdown_item,
-            listOf("Hoài My (Nữ)", "Nam Minh (Nam)"),
-        )
+        voiceSpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                listOf("Hoài My (Nữ)", "Nam Minh (Nam)"),
+            )
+        }
         voiceRow.addView(voiceSpinner, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         root.addView(voiceRow)
+
+        val toneRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        toneRow.addView(TextView(this).apply {
+            text = "Chất giọng:"
+            textSize = 16f
+        })
+        toneSpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                listOf("Ấm áp (-30Hz)", "Rất trầm (-50Hz)", "Tự nhiên (0Hz)"),
+            )
+        }
+        toneRow.addView(toneSpinner, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        root.addView(toneRow)
 
         val speedRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
         speedLabel = TextView(this).apply {
-            text = "Tốc độ 1.00x"
+            text = "Tốc độ 0.95x"
             textSize = 15f
         }
         speedRow.addView(speedLabel, LinearLayout.LayoutParams(dp(110), ViewGroup.LayoutParams.WRAP_CONTENT))
         speedRow.addView(SeekBar(this).apply {
             max = 100
-            progress = 25
+            progress = 20
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                     speed = 0.75f + progress / 100f
                     speedLabel.text = "Tốc độ %.2fx".format(speed)
                 }
+
                 override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
                 override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
             })
@@ -113,19 +133,33 @@ class MainActivity : Activity() {
             text = title
             setOnClickListener { action() }
         }
+
         buttons.addView(button("Đọc") {
             if (!controller.resume()) {
-                val voice = if (voiceSpinner.selectedItemPosition == 0) "vi-VN-HoaiMyNeural" else "vi-VN-NamMinhNeural"
-                controller.start(textInput.text.toString(), voice, speed)
+                val voice = if (voiceSpinner.selectedItemPosition == 0) {
+                    "vi-VN-HoaiMyNeural"
+                } else {
+                    "vi-VN-NamMinhNeural"
+                }
+                val pitch = when (toneSpinner.selectedItemPosition) {
+                    1 -> -50
+                    2 -> 0
+                    else -> -30
+                }
+                controller.start(textInput.text.toString(), voice, speed, pitch)
             }
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+
         buttons.addView(button("Tạm dừng") { controller.pause() }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         buttons.addView(button("Dừng") { controller.stop() }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        buttons.addView(button("Xóa") { textInput.setText(""); controller.stop() }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        buttons.addView(button("Xóa") {
+            textInput.setText("")
+            controller.stop()
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         root.addView(buttons)
 
         status = TextView(this).apply {
-            text = "Sẵn sàng"
+            text = "Sẵn sàng · mặc định Hoài My ấm"
             textSize = 14f
             setTextColor(Color.DKGRAY)
             gravity = Gravity.CENTER_HORIZONTAL

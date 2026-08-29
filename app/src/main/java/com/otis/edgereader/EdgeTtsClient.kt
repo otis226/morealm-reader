@@ -19,33 +19,36 @@ import java.util.concurrent.atomic.AtomicReference
 
 class EdgeTtsClient {
     private val client = OkHttpClient.Builder()
-        .connectTimeout(12, TimeUnit.SECONDS)
+        .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
+        .pingInterval(20, TimeUnit.SECONDS)
         .build()
 
     @Volatile
     private var clockSkewSeconds: Long = 0L
 
-    fun synthesize(text: String, voice: String, speed: Float): ByteArray {
+    fun synthesize(text: String, voice: String, speed: Float, pitchHz: Int): ByteArray {
         var last: Throwable? = null
-        repeat(2) { attempt ->
+        repeat(3) { attempt ->
             try {
-                return synthesizeOnce(text, voice, speed)
+                return synthesizeOnce(text, voice, speed, pitchHz)
             } catch (e: EdgeException) {
                 last = e
-                if ((e.code == 401 || e.code == 403) && attempt == 0 && adjustClock(e.serverDate)) {
-                    return@repeat
+                if ((e.code == 401 || e.code == 403) && adjustClock(e.serverDate)) {
+                    // retry with corrected clock
+                } else if (attempt == 2) {
+                    throw e
                 }
-                throw e
             } catch (t: Throwable) {
                 last = t
-                if (attempt == 1) throw t
+                if (attempt == 2) throw t
             }
+            Thread.sleep(220L * (attempt + 1))
         }
         throw last ?: IllegalStateException("Edge TTS không phản hồi")
     }
 
-    private fun synthesizeOnce(text: String, voice: String, speed: Float): ByteArray {
+    private fun synthesizeOnce(text: String, voice: String, speed: Float, pitchHz: Int): ByteArray {
         val requestId = UUID.randomUUID().toString().replace("-", "")
         val connectionId = UUID.randomUUID().toString().replace("-", "")
         val gec = generateSecMsGec()
@@ -58,18 +61,17 @@ class EdgeTtsClient {
             .header("Origin", ORIGIN)
             .header("Pragma", "no-cache")
             .header("Cache-Control", "no-cache")
+            .header("Accept-Language", "en-US,en;q=0.9")
             .header("Cookie", "muid=$muid;")
             .build()
 
         val done = CountDownLatch(1)
         val audio = ByteArrayOutputStream()
         val error = AtomicReference<Throwable?>(null)
-        val socketRef = AtomicReference<WebSocket?>(null)
 
         val socket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                val stamp = edgeTimestamp()
-                val config = "X-Timestamp:$stamp\r\n" +
+                val config = "X-Timestamp:${edgeTimestamp()}\r\n" +
                     "Content-Type:application/json; charset=utf-8\r\n" +
                     "Path:speech.config\r\n\r\n" +
                     "{\"context\":{\"synthesis\":{\"audio\":{\"metadataoptions\":{\"sentenceBoundaryEnabled\":\"false\",\"wordBoundaryEnabled\":\"false\"},\"outputFormat\":\"audio-24khz-48kbitrate-mono-mp3\"}}}}\r\n"
@@ -77,10 +79,10 @@ class EdgeTtsClient {
 
                 val pct = ((speed.coerceIn(0.5f, 2.0f) - 1f) * 100f).toInt()
                 val rate = if (pct >= 0) "+$pct%" else "$pct%"
-                val clean = cleanText(text)
+                val pitch = if (pitchHz >= 0) "+${pitchHz}Hz" else "${pitchHz}Hz"
                 val ssml = "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>" +
-                    "<voice name='$voice'><prosody pitch='+0Hz' rate='$rate' volume='+0%'>" +
-                    escapeXml(clean) +
+                    "<voice name='$voice'><prosody pitch='$pitch' rate='$rate' volume='+0%'>" +
+                    escapeXml(cleanText(text)) +
                     "</prosody></voice></speak>"
                 val message = "X-RequestId:$requestId\r\n" +
                     "Content-Type:application/ssml+xml\r\n" +
@@ -94,25 +96,27 @@ class EdgeTtsClient {
                 if (data.size < 3) return
                 val headerLen = ((data[0].toInt() and 0xff) shl 8) or (data[1].toInt() and 0xff)
                 val payloadStart = headerLen + 2
-                if (payloadStart <= 2 || payloadStart > data.size) return
-                val header = runCatching {
-                    String(data, 2, headerLen, Charsets.UTF_8)
-                }.getOrDefault("")
-                if (header.contains("Path:audio", ignoreCase = true)) {
-                    synchronized(audio) {
-                        audio.write(data, payloadStart, data.size - payloadStart)
-                    }
+                if (headerLen <= 0 || payloadStart > data.size) return
+                val header = runCatching { String(data, 2, headerLen, Charsets.UTF_8) }.getOrDefault("")
+                if (header.contains("Path:audio", ignoreCase = true) && payloadStart < data.size) {
+                    synchronized(audio) { audio.write(data, payloadStart, data.size - payloadStart) }
                 }
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                if (text.contains("Path:turn.end", ignoreCase = true)) {
-                    done.countDown()
-                }
+                if (text.contains("Path:turn.end", ignoreCase = true)) done.countDown()
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                error.compareAndSet(null, EdgeException(response?.code ?: -1, response?.header("Date"), t.message ?: "WebSocket lỗi", t))
+                error.compareAndSet(
+                    null,
+                    EdgeException(
+                        response?.code ?: -1,
+                        response?.header("Date"),
+                        t.message ?: "WebSocket lỗi",
+                        t,
+                    )
+                )
                 done.countDown()
             }
 
@@ -120,16 +124,17 @@ class EdgeTtsClient {
                 done.countDown()
             }
         })
-        socketRef.set(socket)
 
-        if (!done.await(50, TimeUnit.SECONDS)) {
+        if (!done.await(55, TimeUnit.SECONDS)) {
             socket.cancel()
             throw IllegalStateException("Edge TTS quá thời gian chờ")
         }
         socket.cancel()
         error.get()?.let { throw it }
         val result = synchronized(audio) { audio.toByteArray() }
-        if (result.isEmpty()) throw IllegalStateException("Edge TTS không trả về âm thanh")
+        if (result.isEmpty()) {
+            throw IllegalStateException("Edge không trả âm thanh cho voice $voice")
+        }
         return result
     }
 
