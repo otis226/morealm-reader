@@ -31,6 +31,7 @@ class PlaybackController(
     private val main = Handler(Looper.getMainLooper())
     private val workers = Executors.newFixedThreadPool(3)
     private val edge = EdgeTtsClient()
+    private val background = BackgroundSoundEngine()
     private val generation = AtomicInteger(0)
     private val prefetched = ConcurrentHashMap<Int, EdgeTtsClient.SynthesisResult>()
     private val cache = object : LinkedHashMap<String, EdgeTtsClient.SynthesisResult>(24, 0.75f, true) {
@@ -43,10 +44,28 @@ class PlaybackController(
     @Volatile private var voice: String = "vi-VN-HoaiMyNeural"
     @Volatile private var speed: Float = 0.95f
     @Volatile private var pitchHz: Int = -60
+    @Volatile private var voiceVolume: Float = 1f
     @Volatile private var paused = false
     private var player: MediaPlayer? = null
     private var progressRunnable: Runnable? = null
     private var lastHighlightedStart = -1
+
+    fun setVoiceVolume(value: Float) {
+        voiceVolume = value.coerceIn(0f, 1f)
+        player?.let { runCatching { it.setVolume(voiceVolume, voiceVolume) } }
+    }
+
+    fun setBackgroundMode(mode: BackgroundSoundEngine.Mode) {
+        background.setMode(mode)
+    }
+
+    fun setRainVolume(value: Float) {
+        background.setRainVolume(value)
+    }
+
+    fun setPadVolume(value: Float) {
+        background.setPadVolume(value)
+    }
 
     fun start(text: String, voice: String, speed: Float, pitchHz: Int) {
         val clean = text.trim()
@@ -64,25 +83,28 @@ class PlaybackController(
         paused = false
         lastHighlightedStart = -1
         highlight(-1, -1)
-        status("Đang tạo giọng…")
+        background.start()
+        status("Âm nền đã chạy · đang tạo giọng…")
         synthesizeAndPlay(0, gen)
         prefetch(1, gen)
         prefetch(2, gen)
     }
 
     fun pause() {
-        val p = player ?: return
-        if (p.isPlaying) {
+        val p = player
+        if (p != null && p.isPlaying) {
             p.pause()
-            paused = true
-            status("Đã tạm dừng")
         }
+        background.pause()
+        paused = true
+        status("Đã tạm dừng")
     }
 
     fun resume(): Boolean {
-        val p = player ?: return false
         if (!paused) return false
+        val p = player ?: return false
         p.start()
+        background.resume()
         paused = false
         status("Đang đọc…")
         return true
@@ -93,18 +115,21 @@ class PlaybackController(
         prefetched.clear()
         paused = false
         releasePlayer()
+        background.stop()
         highlight(-1, -1)
         status("Đã dừng")
     }
 
     fun release() {
         stop()
+        background.release()
         workers.shutdownNow()
     }
 
     private fun synthesizeAndPlay(index: Int, gen: Int) {
         if (gen != generation.get()) return
         if (index >= chunks.size) {
+            background.stop()
             highlight(-1, -1)
             status("Đã đọc xong")
             return
@@ -123,6 +148,7 @@ class PlaybackController(
                 }
             } catch (t: Throwable) {
                 if (gen != generation.get()) return@submit
+                background.stop()
                 status("Lỗi ${shortVoiceName()}: ${t.message ?: "không tạo được âm thanh"}")
             }
         }
@@ -146,12 +172,14 @@ class PlaybackController(
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                 .build()
         )
+        mp.setVolume(voiceVolume, voiceVolume)
         mp.setDataSource(ByteArraySource(result.audio))
         mp.setOnPreparedListener {
             if (gen != generation.get()) {
                 it.release()
                 return@setOnPreparedListener
             }
+            it.setVolume(voiceVolume, voiceVolume)
             it.start()
             paused = false
             val prep = if (index == 0 && synthMs > 0) " · ${synthMs}ms" else ""
@@ -172,6 +200,7 @@ class PlaybackController(
         }
         mp.setOnErrorListener { _, what, extra ->
             stopProgressLoop()
+            background.stop()
             if (gen == generation.get()) status("Lỗi phát âm thanh ($what/$extra)")
             true
         }
@@ -284,10 +313,6 @@ class PlaybackController(
         main.post { onWord(start, end) }
     }
 
-    /**
-     * Chia trực tiếp trên chuỗi hiển thị để offset highlight luôn khớp văn bản.
-     * Đoạn đầu ngắn để giảm latency; các đoạn sau dài hơn để giảm số lần gọi Edge.
-     */
     private fun splitText(text: String): List<Chunk> {
         val out = ArrayList<Chunk>()
         var pos = 0
