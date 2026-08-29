@@ -12,6 +12,7 @@ import android.text.style.BackgroundColorSpan
 import android.text.style.StyleSpan
 import android.view.Gravity
 import android.view.ViewGroup
+import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.LinearLayout
@@ -27,16 +28,19 @@ class MainActivity : Activity() {
     private lateinit var readerText: TextView
     private lateinit var status: TextView
     private lateinit var speedLabel: TextView
+    private lateinit var pitchLabel: TextView
     private lateinit var voiceSpinner: Spinner
-    private lateinit var toneSpinner: Spinner
+    private lateinit var soundSpinner: Spinner
 
     private var speed = 0.95f
+    private var pitchHz = -60
+    private var voiceVolume = 1.0f
+    private var rainVolume = 0.24f
+    private var padVolume = 0.14f
     private var currentText = ""
     private var spannable = SpannableString("")
     private var highlightSpan: BackgroundColorSpan? = null
     private var boldSpan: StyleSpan? = null
-
-    private val pitchValues = intArrayOf(0, -20, -40, -60, -80, -100, -120)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -45,32 +49,33 @@ class MainActivity : Activity() {
             onStatus = { status.text = it },
             onWord = { start, end -> highlightRange(start, end) },
         )
+        applyAudioSettings()
     }
 
     private fun buildUi() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(14), dp(16), dp(14))
+            setPadding(dp(14), dp(12), dp(14), dp(12))
             setBackgroundColor(Color.rgb(250, 248, 243))
         }
 
         root.addView(TextView(this).apply {
             text = "Edge Story Reader"
-            textSize = 23f
+            textSize = 22f
             setTypeface(typeface, Typeface.BOLD)
             setTextColor(Color.rgb(32, 32, 32))
-            setPadding(0, 0, 0, dp(4))
+            setPadding(0, 0, 0, dp(3))
         })
 
         root.addView(TextView(this).apply {
-            text = "Copy truyện từ ChatGPT → bấm Dán & Đọc → app tự theo chữ."
-            textSize = 13f
+            text = "Copy truyện từ ChatGPT → Dán & Đọc → app theo chữ + âm nền."
+            textSize = 12.5f
             setTextColor(Color.DKGRAY)
-            setPadding(0, 0, 0, dp(8))
+            setPadding(0, 0, 0, dp(7))
         })
 
         readerText = TextView(this).apply {
-            text = "Copy một đoạn truyện, rồi bấm Dán & Đọc.\n\nTừ đang được đọc sẽ được tô sáng và màn hình tự cuộn theo."
+            text = "Copy một đoạn truyện, rồi bấm Dán & Đọc.\n\nTừ đang đọc sẽ được tô sáng và màn hình tự cuộn theo."
             textSize = 19f
             setTextColor(Color.rgb(35, 35, 35))
             setLineSpacing(dp(5).toFloat(), 1.08f)
@@ -99,11 +104,11 @@ class MainActivity : Activity() {
         val voiceRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(8), 0, 0)
+            setPadding(0, dp(6), 0, 0)
         }
         voiceRow.addView(TextView(this).apply {
             text = "Giọng:"
-            textSize = 15f
+            textSize = 14f
         })
         voiceSpinner = Spinner(this).apply {
             adapter = ArrayAdapter(
@@ -118,35 +123,31 @@ class MainActivity : Activity() {
         )
         root.addView(voiceRow)
 
-        val toneRow = LinearLayout(this).apply {
+        val pitchRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        toneRow.addView(TextView(this).apply {
-            text = "Độ trầm:"
-            textSize = 15f
-        })
-        toneSpinner = Spinner(this).apply {
-            adapter = ArrayAdapter(
-                this@MainActivity,
-                android.R.layout.simple_spinner_dropdown_item,
-                listOf(
-                    "Tự nhiên (0Hz)",
-                    "Ấm nhẹ (-20Hz)",
-                    "Ấm (-40Hz)",
-                    "Trầm (-60Hz)",
-                    "Rất trầm (-80Hz)",
-                    "Sâu (-100Hz)",
-                    "Rất sâu (-120Hz)",
-                ),
-            )
-            setSelection(3)
+        pitchLabel = TextView(this).apply {
+            text = "Độ trầm -60Hz"
+            textSize = 14f
         }
-        toneRow.addView(
-            toneSpinner,
-            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        pitchRow.addView(
+            pitchLabel,
+            LinearLayout.LayoutParams(dp(125), ViewGroup.LayoutParams.WRAP_CONTENT)
         )
-        root.addView(toneRow)
+        pitchRow.addView(SeekBar(this).apply {
+            max = 20
+            progress = 6
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                    pitchHz = -progress * 10
+                    pitchLabel.text = "Độ trầm ${pitchHz}Hz"
+                }
+                override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
+                override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
+            })
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        root.addView(pitchRow)
 
         val speedRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -158,7 +159,7 @@ class MainActivity : Activity() {
         }
         speedRow.addView(
             speedLabel,
-            LinearLayout.LayoutParams(dp(108), ViewGroup.LayoutParams.WRAP_CONTENT)
+            LinearLayout.LayoutParams(dp(125), ViewGroup.LayoutParams.WRAP_CONTENT)
         )
         speedRow.addView(SeekBar(this).apply {
             max = 100
@@ -168,12 +169,52 @@ class MainActivity : Activity() {
                     speed = 0.75f + progress / 100f
                     speedLabel.text = "Tốc độ %.2fx".format(speed)
                 }
-
                 override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
                 override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
             })
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         root.addView(speedRow)
+
+        val soundRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        soundRow.addView(TextView(this).apply {
+            text = "Âm nền:"
+            textSize = 14f
+        })
+        soundSpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                listOf("Tắt", "Mưa", "Pad ấm", "Mưa + Pad ấm"),
+            )
+            setSelection(3)
+            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
+                    if (::controller.isInitialized) controller.setBackgroundMode(selectedBackgroundMode())
+                }
+                override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+            }
+        }
+        soundRow.addView(
+            soundSpinner,
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        )
+        root.addView(soundRow)
+
+        addVolumeRow(root, "Giọng", 100) { progress ->
+            voiceVolume = progress / 100f
+            if (::controller.isInitialized) controller.setVoiceVolume(voiceVolume)
+        }
+        addVolumeRow(root, "Mưa", 24) { progress ->
+            rainVolume = progress / 100f
+            if (::controller.isInitialized) controller.setRainVolume(rainVolume)
+        }
+        addVolumeRow(root, "Nhạc", 14) { progress ->
+            padVolume = progress / 100f
+            if (::controller.isInitialized) controller.setPadVolume(padVolume)
+        }
 
         val pasteButton = Button(this).apply {
             text = "DÁN & ĐỌC"
@@ -188,14 +229,14 @@ class MainActivity : Activity() {
         val buttons = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
-            setPadding(0, dp(4), 0, dp(4))
+            setPadding(0, dp(2), 0, dp(2))
         }
         fun button(title: String, action: () -> Unit): Button = Button(this).apply {
             text = title
             setOnClickListener { action() }
         }
         buttons.addView(
-            button("Đọc lại") { startCurrentText() },
+            button("Tiếp tục") { controller.resume() },
             LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         )
         buttons.addView(
@@ -209,14 +250,44 @@ class MainActivity : Activity() {
         root.addView(buttons)
 
         status = TextView(this).apply {
-            text = "Sẵn sàng · mặc định -60Hz"
-            textSize = 13f
+            text = "Sẵn sàng · -60Hz · Mưa + Pad"
+            textSize = 12.5f
             setTextColor(Color.DKGRAY)
             gravity = Gravity.CENTER_HORIZONTAL
         }
         root.addView(status)
 
         setContentView(root)
+    }
+
+    private fun addVolumeRow(
+        parent: LinearLayout,
+        title: String,
+        initial: Int,
+        onChange: (Int) -> Unit,
+    ) {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val label = TextView(this).apply {
+            text = "$title $initial%"
+            textSize = 13f
+        }
+        row.addView(label, LinearLayout.LayoutParams(dp(95), ViewGroup.LayoutParams.WRAP_CONTENT))
+        row.addView(SeekBar(this).apply {
+            max = 100
+            progress = initial
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                    label.text = "$title $progress%"
+                    onChange(progress)
+                }
+                override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
+                override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
+            })
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        parent.addView(row)
     }
 
     private fun pasteAndRead() {
@@ -245,8 +316,23 @@ class MainActivity : Activity() {
         } else {
             "vi-VN-NamMinhNeural"
         }
-        val pitch = pitchValues[toneSpinner.selectedItemPosition.coerceIn(pitchValues.indices)]
-        controller.start(currentText, voice, speed, pitch)
+        applyAudioSettings()
+        controller.start(currentText, voice, speed, pitchHz)
+    }
+
+    private fun applyAudioSettings() {
+        if (!::controller.isInitialized) return
+        controller.setVoiceVolume(voiceVolume)
+        controller.setRainVolume(rainVolume)
+        controller.setPadVolume(padVolume)
+        controller.setBackgroundMode(selectedBackgroundMode())
+    }
+
+    private fun selectedBackgroundMode(): BackgroundSoundEngine.Mode = when (soundSpinner.selectedItemPosition) {
+        1 -> BackgroundSoundEngine.Mode.RAIN
+        2 -> BackgroundSoundEngine.Mode.PAD
+        3 -> BackgroundSoundEngine.Mode.RAIN_PAD
+        else -> BackgroundSoundEngine.Mode.OFF
     }
 
     private fun setReaderText(text: String) {
