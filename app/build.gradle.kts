@@ -12,7 +12,8 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = 100
-        versionName = "1.0.0-dev1"
+        versionName = "1.0.0-rc1"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     compileOptions {
@@ -22,6 +23,10 @@ android {
 
     kotlinOptions {
         jvmTarget = "17"
+    }
+
+    testOptions {
+        animationsDisabled = true
     }
 }
 
@@ -33,4 +38,8 @@ dependencies {
     implementation("androidx.media3:media3-session:$media3Version")
 
     testImplementation("junit:junit:4.13.2")
+
+    androidTestImplementation("androidx.test:core:1.7.0")
+    androidTestImplementation("androidx.test:runner:1.7.0")
+    androidTestImplementation("androidx.test.ext:junit:1.3.0")
 }
