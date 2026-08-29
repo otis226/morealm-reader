@@ -24,6 +24,7 @@ object StorySessionCommands {
     const val KEY_VOICE = "voice"
     const val KEY_SPEED = "speed"
     const val KEY_PITCH = "pitch"
+    const val KEY_VOICE_VOLUME = "voice_volume"
     const val KEY_STATUS = "status"
     const val KEY_ERROR = "error"
     const val KEY_TITLE = "title"
