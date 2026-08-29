@@ -57,6 +57,11 @@ class MainActivity : Activity() {
     private var backgroundMode = BackgroundSoundEngine.Mode.OFF
     private var customSoundUri: Uri? = null
 
+    private var bookTitle: String? = null
+    private var bookChapters: List<EpubParser.Chapter> = emptyList()
+    private var currentChapterIndex = -1
+
+    /** currentText chỉ là chương hiện tại, không còn là toàn bộ EPUB. */
     private var currentText = ""
     private var windowStart = 0
     private var windowEnd = 0
@@ -70,6 +75,7 @@ class MainActivity : Activity() {
     private var lastTapGlobalOffset = -1
     private var playingUi = false
     private var pausedUi = false
+    private var switchingChapterAutomatically = false
 
     private val ambienceOptions = listOf(
         "Tắt" to BackgroundSoundEngine.Mode.OFF,
@@ -140,12 +146,12 @@ class MainActivity : Activity() {
             isFocusable = true
             setOnTouchListener { _, event ->
                 if (event.action == MotionEvent.ACTION_UP && controlsVisible && currentText.isNotBlank()) {
-                    val layout = layout
-                    if (layout != null) {
+                    val textLayout = layout
+                    if (textLayout != null) {
                         val x = (event.x - totalPaddingLeft).coerceAtLeast(0f)
                         val y = (event.y - totalPaddingTop).coerceAtLeast(0f)
-                        val line = layout.getLineForVertical(y.toInt().coerceAtLeast(0))
-                        val local = layout.getOffsetForHorizontal(line, x)
+                        val line = textLayout.getLineForVertical(y.toInt().coerceAtLeast(0))
+                        val local = textLayout.getOffsetForHorizontal(line, x)
                         lastTapGlobalOffset = (windowStart + local).coerceIn(0, currentText.length)
                     }
                 }
@@ -209,7 +215,7 @@ class MainActivity : Activity() {
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                     if (fromUser) {
-                        progressLabel.text = "${progress / 10}%"
+                        updateProgressLabel(progress)
                         bumpControls()
                     }
                 }
@@ -244,6 +250,15 @@ class MainActivity : Activity() {
         controls.addView(playerButton("+") { adjustSpeed(0.05f) })
         controls.addView(playerButton("⏭") { jumpSentence(1) })
         playerPanel.addView(controls)
+
+        val chapterControls = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+        }
+        chapterControls.addView(chapterButton("‹ CHƯƠNG") { jumpChapter(-1) })
+        chapterControls.addView(chapterButton("MỤC LỤC") { showChapterSheet() })
+        chapterControls.addView(chapterButton("CHƯƠNG ›") { jumpChapter(1) })
+        playerPanel.addView(chapterControls)
 
         status = TextView(this).apply {
             text = "Sẵn sàng"
@@ -307,9 +322,46 @@ class MainActivity : Activity() {
         if (currentText.isBlank()) return
         val base = lastReadOffset.coerceIn(0, currentText.length)
         val target = if (direction > 0) nextSentenceStart(currentText, base) else previousSentenceStart(currentText, base)
-        renderWindow(target)
-        startCurrentText(target)
+        if (direction > 0 && target >= currentText.length && isBookMode() && currentChapterIndex < bookChapters.lastIndex) {
+            openChapter(currentChapterIndex + 1, autoPlay = true)
+        } else if (direction < 0 && target <= 0 && base <= 8 && isBookMode() && currentChapterIndex > 0) {
+            openChapter(currentChapterIndex - 1, autoPlay = true, startAtEnd = true)
+        } else {
+            renderWindow(target)
+            startCurrentText(target)
+        }
         bumpControls()
+    }
+
+    private fun jumpChapter(direction: Int) {
+        if (!isBookMode()) {
+            status.text = "Chỉ có điều hướng chương khi đang đọc EPUB"
+            bumpControls()
+            return
+        }
+        val target = (currentChapterIndex + direction).coerceIn(0, bookChapters.lastIndex)
+        if (target == currentChapterIndex) return
+        openChapter(target, autoPlay = true)
+        bumpControls()
+    }
+
+    private fun showChapterSheet() {
+        bumpControls()
+        if (!isBookMode()) {
+            status.text = "Văn bản dán không có mục lục chương"
+            return
+        }
+        val dialog = bottomSheet("Mục lục · ${bookTitle ?: "EPUB"}") { sheet, close ->
+            bookChapters.forEachIndexed { index, chapter ->
+                val current = if (index == currentChapterIndex) "✓ " else ""
+                sheet.addView(sheetButton("$current${index + 1}. ${chapter.title}") {
+                    close()
+                    openChapter(index, autoPlay = true)
+                })
+            }
+        }
+        dialog.show()
+        styleBottomSheet(dialog)
     }
 
     private fun showPasteSheet() {
@@ -321,6 +373,7 @@ class MainActivity : Activity() {
                     status.text = "Clipboard đang trống"
                 } else {
                     controller.stop()
+                    leaveBookMode()
                     documentTitle.text = "Văn bản từ clipboard"
                     setDocumentText(text)
                     startCurrentText(0)
@@ -334,6 +387,7 @@ class MainActivity : Activity() {
             sheet.addView(sheetButton("Chỉ dán thay thế, chưa đọc") {
                 if (text.isNotBlank()) {
                     controller.stop()
+                    leaveBookMode()
                     documentTitle.text = "Văn bản từ clipboard"
                     setDocumentText(text)
                     status.text = "Đã dán"
@@ -408,12 +462,21 @@ class MainActivity : Activity() {
         val clean = text.trim()
         if (clean.isBlank()) return
         if (currentText.isBlank()) {
+            leaveBookMode()
             setDocumentText(clean)
             startCurrentText(0)
             return
         }
         val appendStart = currentText.length + 2
         currentText = currentText + "\n\n" + clean
+
+        if (isBookMode()) {
+            val updated = bookChapters.toMutableList()
+            val old = updated[currentChapterIndex]
+            updated[currentChapterIndex] = old.copy(text = currentText)
+            bookChapters = updated
+        }
+
         if (controller.isActiveOrPaused()) {
             controller.appendText(currentText, appendStart)
         } else {
@@ -460,10 +523,24 @@ class MainActivity : Activity() {
                 pausedUi = false
                 playPauseButton.text = "⏸"
             }
-            text.startsWith("Đã dừng") || text.startsWith("Đã đọc xong") || text.startsWith("Lỗi") -> {
+            text.startsWith("Đã dừng") || text.startsWith("Lỗi") -> {
                 playingUi = false
                 pausedUi = false
                 playPauseButton.text = "▶"
+            }
+            text.startsWith("Đã đọc xong") -> {
+                playingUi = false
+                pausedUi = false
+                playPauseButton.text = "▶"
+                if (isBookMode() && currentChapterIndex < bookChapters.lastIndex && !switchingChapterAutomatically) {
+                    switchingChapterAutomatically = true
+                    uiHandler.postDelayed({
+                        switchingChapterAutomatically = false
+                        if (isBookMode() && currentChapterIndex < bookChapters.lastIndex) {
+                            openChapter(currentChapterIndex + 1, autoPlay = true)
+                        }
+                    }, 180L)
+                }
             }
         }
     }
@@ -473,8 +550,20 @@ class MainActivity : Activity() {
         if (total <= 0 || userSeeking) return
         val value = ((current.toDouble() / total) * 1000.0).toInt().coerceIn(0, 1000)
         progressSeek.progress = value
-        progressLabel.text = "${value / 10}%"
+        updateProgressLabel(value)
     }
+
+    private fun updateProgressLabel(value: Int) {
+        val percent = value / 10
+        if (isBookMode()) {
+            val page = ((value / 1000.0) * estimatedPagesInChapter()).toInt().coerceIn(0, max(estimatedPagesInChapter() - 1, 0)) + 1
+            progressLabel.text = "Ch ${currentChapterIndex + 1}/${bookChapters.size} · $percent% · T$page/${estimatedPagesInChapter()}"
+        } else {
+            progressLabel.text = "$percent%"
+        }
+    }
+
+    private fun estimatedPagesInChapter(): Int = max(1, (currentText.length + ESTIMATED_PAGE_CHARS - 1) / ESTIMATED_PAGE_CHARS)
 
     private fun openEpubPicker() {
         bumpControls()
@@ -522,14 +611,41 @@ class MainActivity : Activity() {
             val result = runCatching { EpubParser.parse(this, uri) }
             runOnUiThread {
                 result.onSuccess { book ->
-                    documentTitle.text = book.title ?: "EPUB"
-                    setDocumentText(book.text)
-                    status.text = "Đã import EPUB · ${book.text.length} ký tự"
+                    bookTitle = book.title ?: "EPUB"
+                    bookChapters = book.chapters
+                    val firstReadable = bookChapters.indexOfFirst { it.text.length >= 180 }.takeIf { it >= 0 } ?: 0
+                    openChapter(firstReadable, autoPlay = false)
+                    status.text = "${bookChapters.size} chương · ${book.totalCharacters} ký tự"
                 }.onFailure { error ->
                     status.text = "Không import được EPUB: ${error.message ?: "lỗi không rõ"}"
                 }
             }
         }.start()
+    }
+
+    private fun openChapter(index: Int, autoPlay: Boolean, startAtEnd: Boolean = false) {
+        if (!isBookMode()) return
+        val safeIndex = index.coerceIn(0, bookChapters.lastIndex)
+        controller.stop()
+        currentChapterIndex = safeIndex
+        val chapter = bookChapters[safeIndex]
+        currentText = chapter.text.trim()
+        lastReadOffset = if (startAtEnd) previousSentenceStart(currentText, currentText.length) else 0
+        documentTitle.text = "${bookTitle ?: "EPUB"} · ${chapter.title}"
+        progressSeek.progress = if (startAtEnd) 990 else 0
+        updateProgressLabel(progressSeek.progress)
+        renderWindow(lastReadOffset)
+        status.text = "Chương ${safeIndex + 1}/${bookChapters.size} · ${chapter.title}"
+        if (autoPlay) startCurrentText(lastReadOffset)
+    }
+
+    private fun isBookMode(): Boolean = bookChapters.isNotEmpty() && currentChapterIndex in bookChapters.indices
+
+    private fun leaveBookMode() {
+        bookTitle = null
+        bookChapters = emptyList()
+        currentChapterIndex = -1
+        switchingChapterAutomatically = false
     }
 
     private fun clipboardText(): String {
@@ -543,13 +659,13 @@ class MainActivity : Activity() {
         currentText = text.trim()
         lastReadOffset = 0
         progressSeek.progress = 0
-        progressLabel.text = "0%"
+        updateProgressLabel(0)
         renderWindow(0)
     }
 
     /**
-     * Performance: chỉ đưa một cửa sổ nhỏ vào TextView thay vì SpannableString của cả EPUB.
-     * Full text vẫn giữ dạng String để TTS/seek dùng offset toàn cục.
+     * Performance: chỉ đưa một cửa sổ nhỏ vào TextView thay vì SpannableString của cả chương.
+     * Với EPUB, currentText chỉ là một chương nên memory/GC còn nhẹ hơn v0.6.
      */
     private fun renderWindow(centerOffset: Int) {
         if (currentText.isBlank()) return
@@ -570,10 +686,10 @@ class MainActivity : Activity() {
         readerText.text = spannable
         readerScroll.post {
             val local = (center - windowStart).coerceIn(0, max(spannable.length - 1, 0))
-            val layout = readerText.layout
-            if (layout != null && spannable.isNotEmpty()) {
-                val line = layout.getLineForOffset(local)
-                val y = max(0, layout.getLineTop(line) - readerScroll.height / 3)
+            val textLayout = readerText.layout
+            if (textLayout != null && spannable.isNotEmpty()) {
+                val line = textLayout.getLineForOffset(local)
+                val y = max(0, textLayout.getLineTop(line) - readerScroll.height / 3)
                 readerScroll.scrollTo(0, y)
             } else {
                 readerScroll.scrollTo(0, 0)
@@ -605,9 +721,9 @@ class MainActivity : Activity() {
         readerText.text = spannable
 
         readerText.post {
-            val layout = readerText.layout ?: return@post
-            val line = layout.getLineForOffset(localStart)
-            val targetY = max(0, layout.getLineTop(line) - readerScroll.height / 3)
+            val textLayout = readerText.layout ?: return@post
+            val line = textLayout.getLineForOffset(localStart)
+            val targetY = max(0, textLayout.getLineTop(line) - readerScroll.height / 3)
             readerScroll.smoothScrollTo(0, targetY)
         }
     }
@@ -771,7 +887,17 @@ class MainActivity : Activity() {
         minimumWidth = 0
         setPadding(0, 0, 0, 0)
         setOnClickListener { action() }
-        layoutParams = LinearLayout.LayoutParams(0, dp(54), 1f)
+        layoutParams = LinearLayout.LayoutParams(0, dp(52), 1f)
+    }
+
+    private fun chapterButton(title: String, action: () -> Unit): Button = Button(this).apply {
+        text = title
+        textSize = 10.5f
+        minWidth = 0
+        minimumWidth = 0
+        setPadding(0, 0, 0, 0)
+        setOnClickListener { action() }
+        layoutParams = LinearLayout.LayoutParams(0, dp(40), 1f)
     }
 
     private fun sheetButton(title: String, action: () -> Unit): Button = Button(this).apply {
@@ -793,8 +919,9 @@ class MainActivity : Activity() {
         private const val REQ_EPUB = 3001
         private const val REQ_AUDIO = 3002
         private const val AUTO_HIDE_MS = 5500L
-        private const val WINDOW_CHARS = 12_000
-        private const val WINDOW_BEFORE = 3_500
-        private const val WINDOW_EDGE = 700
+        private const val WINDOW_CHARS = 10_000
+        private const val WINDOW_BEFORE = 3_000
+        private const val WINDOW_EDGE = 650
+        private const val ESTIMATED_PAGE_CHARS = 2_200
     }
 }
