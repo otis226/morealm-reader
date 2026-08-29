@@ -9,6 +9,8 @@ import androidx.media3.session.SessionToken
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import com.google.common.util.concurrent.ListenableFuture
 import com.otis.edgereader.playback.StoryPlaybackService
 import com.otis.edgereader.playback.StorySessionCommands
 import org.junit.Assert.assertEquals
@@ -16,6 +18,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 @RunWith(AndroidJUnit4::class)
 class V1AndroidSmokeTest {
@@ -36,14 +39,24 @@ class V1AndroidSmokeTest {
         val token = SessionToken(context, ComponentName(context, StoryPlaybackService::class.java))
         val controllerFuture = MediaController.Builder(context, token).buildAsync()
         try {
+            // Await connection from the instrumentation worker thread. MediaController itself is
+            // main-looper-bound, so commands must be issued on that application looper.
             val controller = controllerFuture.get(15, TimeUnit.SECONDS)
-            val result = controller.sendCustomCommand(
-                StorySessionCommands.command(StorySessionCommands.GET_STATE),
-                Bundle.EMPTY,
-            ).get(10, TimeUnit.SECONDS)
+            val commandFuture = AtomicReference<ListenableFuture<SessionResult>>()
+            InstrumentationRegistry.getInstrumentation().runOnMainSync {
+                commandFuture.set(
+                    controller.sendCustomCommand(
+                        StorySessionCommands.command(StorySessionCommands.GET_STATE),
+                        Bundle.EMPTY,
+                    )
+                )
+            }
+            val result = commandFuture.get().get(10, TimeUnit.SECONDS)
             assertEquals(SessionResult.RESULT_SUCCESS, result.resultCode)
         } finally {
-            MediaController.releaseFuture(controllerFuture)
+            InstrumentationRegistry.getInstrumentation().runOnMainSync {
+                MediaController.releaseFuture(controllerFuture)
+            }
         }
     }
 }
