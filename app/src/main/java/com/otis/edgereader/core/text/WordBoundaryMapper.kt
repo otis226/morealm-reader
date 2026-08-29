@@ -10,14 +10,22 @@ data class MappedWordBoundary(
 )
 
 object WordBoundaryMapper {
-    /** Maps Edge word timestamps back to monotonically increasing offsets in the exact chunk text. */
+    /**
+     * Maps Edge word timestamps back to offsets in the exact chunk text.
+     * If one metadata token cannot be found, keep the search cursor unchanged so a
+     * malformed/normalized token cannot poison the offsets of all following words.
+     */
     fun map(chunkText: String, boundaries: List<WordBoundary>): List<MappedWordBoundary> {
         var cursor = 0
         return boundaries.map { boundary ->
-            var index = chunkText.indexOf(boundary.text, startIndex = cursor, ignoreCase = false)
-            if (index < 0) index = chunkText.indexOf(boundary.text, startIndex = cursor, ignoreCase = true)
-            if (index < 0) index = cursor.coerceAtMost(chunkText.length)
-            cursor = (index + boundary.text.length).coerceAtMost(chunkText.length)
+            var found = chunkText.indexOf(boundary.text, startIndex = cursor, ignoreCase = false)
+            if (found < 0) {
+                found = chunkText.indexOf(boundary.text, startIndex = cursor, ignoreCase = true)
+            }
+            val index = if (found >= 0) found else cursor.coerceAtMost(chunkText.length)
+            if (found >= 0) {
+                cursor = (found + boundary.text.length).coerceAtMost(chunkText.length)
+            }
             MappedWordBoundary(
                 text = boundary.text,
                 offsetMs = boundary.offsetMs,
