@@ -1,150 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-
     <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32" />
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
-        android:maxSdkVersion="28" />
-    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
-    <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
 
     <application
-        android:name=".MoRealmApp"
         android:allowBackup="true"
-        android:hardwareAccelerated="true"
-        android:icon="@mipmap/ic_launcher"
-        android:roundIcon="@mipmap/ic_launcher"
-        android:label="@string/app_name"
-        android:largeHeap="true"
-        android:supportsRtl="true"
-        android:theme="@style/Theme.MoRealm.Splash"
-        android:usesCleartextTraffic="true"
-        android:enableOnBackInvokedCallback="true">
-
+        android:label="Edge Reader"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar"
+        android:usesCleartextTraffic="false">
         <activity
-            android:name=".ui.navigation.MainActivity"
-            android:alwaysRetainTaskState="true"
+            android:name=".MainActivity"
             android:exported="true"
-            android:launchMode="singleTask"
-            android:configChanges="uiMode|screenSize|screenLayout|orientation|smallestScreenSize|density"
-            android:resizeableActivity="true"
-            android:windowSoftInputMode="adjustResize">
-            <!-- Foldable: allow activity to resize freely across displays -->
-            <meta-data android:name="android.supports_size_changes" android:value="true" />
+            android:screenOrientation="unspecified">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- Handle file open intents -->
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <data android:mimeType="text/plain" />
-                <data android:mimeType="application/epub+zip" />
-                <data android:mimeType="application/pdf" />
-                <data android:mimeType="application/x-mobipocket-ebook" />
-            </intent-filter>
-            <!-- Continue reading shortcut -->
-            <intent-filter>
-                <action android:name="com.morealm.app.CONTINUE_READING" />
-                <category android:name="android.intent.category.DEFAULT" />
-            </intent-filter>
-            <meta-data
-                android:name="android.app.shortcuts"
-                android:resource="@xml/shortcuts" />
         </activity>
-
-        <!--
-            数据库恢复入口。仅由 MainActivity / 进程重启 launcher Intent 触发，
-            不暴露给其他 app（exported=false）。launchMode=singleTask 防止重复栈起。
-        -->
-        <activity
-            android:name=".ui.recovery.RecoveryActivity"
-            android:exported="false"
-            android:launchMode="singleTask"
-            android:configChanges="screenSize|screenLayout|orientation|smallestScreenSize|density" />
-
-        <!--
-            脚本交互式 WebView 入口。仅由书源登录脚本 (SourceLoginScriptApi.showBrowser) 拉起，
-            不暴露给外部 (exported=false)。扫码登录 / 图形验证码 / 滑块验证类场景必须有 UI。
-            launchMode=singleTop 避免用户在登录中途再次触发同一脚本导致栈里堆两个。
-        -->
-        <activity
-            android:name=".ui.source.ShowBrowserActivity"
-            android:exported="false"
-            android:launchMode="singleTop"
-            android:configChanges="uiMode|screenSize|screenLayout|orientation|smallestScreenSize|density" />
-
-        <service
-            android:name=".service.TtsService"
-            android:exported="false"
-            android:foregroundServiceType="mediaPlayback">
-            <intent-filter>
-                <action android:name="androidx.media3.session.MediaSessionService" />
-            </intent-filter>
-        </service>
-
-        <service
-            android:name=".service.CacheBookService"
-            android:exported="false"
-            android:foregroundServiceType="dataSync" />
-
-        <service
-            android:name=".service.CheckSourceService"
-            android:exported="false"
-            android:foregroundServiceType="dataSync" />
-
-        <provider
-            android:name="androidx.core.content.FileProvider"
-            android:authorities="${applicationId}.fileprovider"
-            android:exported="false"
-            android:grantUriPermissions="true">
-            <meta-data
-                android:name="android.support.FILE_PROVIDER_PATHS"
-                android:resource="@xml/file_paths" />
-        </provider>
-
-        <!--
-          桌面小组件「继续阅读」receiver。
-          android:enabled 通过 @bool/widget_supported 资源守卫：
-            - res/values/widget_bools.xml = false  → API < 23 设备禁用
-            - res/values-v23/widget_bools.xml = true → API 23+ 启用
-          这样在 minSdk=21 的低版本设备上系统不会实例化 Glance receiver，
-          避免 Glance 1.1.x 内部对 API 23+ 的依赖触发 ClassNotFoundException。
-        -->
-        <receiver
-            android:name=".widget.ContinueReadingWidgetReceiver"
-            android:exported="false"
-            android:enabled="@bool/widget_supported"
-            android:label="@string/widget_continue_reading_label">
-            <intent-filter>
-                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
-            </intent-filter>
-            <meta-data
-                android:name="android.appwidget.provider"
-                android:resource="@xml/widget_continue_reading_info" />
-        </receiver>
-
     </application>
-
-    <!--
-      Android 11+ (API 30) 包可见性沙箱：要让 TextToSpeech 能绑到设备上安装的 TTS 引擎
-      进程（系统自带 Google TTS、multitts、讯飞 TTS 等），必须在这里显式声明 TTS_SERVICE
-      意图。否则 `TextToSpeech(ctx, listener)` 构造时找不到任何可绑服务，OnInitListener
-      立即收到 status=ERROR(-1)，引擎列表 `tts.engines` 也是空 —— 表现为 "系统未识别到
-      可用的 TTS 引擎"，无论用户装了什么 TTS APK 都看不见。
-      参考：Legado app/src/main/AndroidManifest.xml 同样的写法。
-    -->
-    <queries>
-        <intent>
-            <action android:name="android.intent.action.TTS_SERVICE" />
-        </intent>
-    </queries>
-
 </manifest>
