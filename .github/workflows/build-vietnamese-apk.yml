@@ -36,6 +36,34 @@ jobs:
           python3 tools/apply_vietnamese.py
           sed -i "s/today's reading time/reading time for today/g" app/src/main/res/values-en/strings.xml
 
+      - name: Work around missing upstream ZhLayout
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("app/src/main/java/com/morealm/app/domain/render/ChapterProvider.kt")
+          s = p.read_text(encoding="utf-8")
+          old = '''        val layout = if (useZhLayout) {
+              val (words, widths) = measureTextSplit(text, widthsArray)
+              val indentSize = if (isFirstLine) paragraphIndent.length else 0
+              ZhLayout(text, textPaint, visibleWidth, words, widths, indentSize)
+          } else {
+              StaticLayout(text, textPaint, visibleWidth, Layout.Alignment.ALIGN_NORMAL, 0f, 0f, true)
+          }'''
+          new = '''        val layout = StaticLayout(
+              text,
+              textPaint,
+              visibleWidth,
+              Layout.Alignment.ALIGN_NORMAL,
+              0f,
+              0f,
+              true,
+          )'''
+          if old not in s:
+              raise SystemExit("ZhLayout block not found; upstream source changed")
+          p.write_text(s.replace(old, new, 1), encoding="utf-8")
+          print("Replaced missing ZhLayout with Android StaticLayout")
+          PY
+
       - name: Build debug APK
         run: gradle assembleDebug --no-daemon
 
