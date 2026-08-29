@@ -1,15 +1,17 @@
-name: Build Edge Text Reader APK
+name: Story Reader v1 CI
 
 on:
   push:
-    branches: [simple-text-tts]
+    branches: [story-reader-v1]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  build:
+  verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,11 +22,16 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-      - name: Build APK
+
+      - name: Unit tests (required gate)
+        run: gradle :app:testDebugUnitTest --no-daemon
+
+      - name: Build debug APK
         run: gradle :app:assembleDebug --no-daemon
+
       - uses: actions/upload-artifact@v4
         with:
-          name: edge-text-reader-debug
+          name: story-reader-v1-dev
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 14

@@ -11,8 +11,8 @@ android {
         applicationId = "com.otis.edgereader"
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
-        versionName = "0.7.0"
+        versionCode = 100
+        versionName = "1.0.0-dev1"
     }
 
     compileOptions {
@@ -27,4 +27,6 @@ android {
 
 dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
+    testImplementation("junit:junit:4.13.2")
 }
