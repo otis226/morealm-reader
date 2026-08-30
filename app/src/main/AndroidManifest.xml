@@ -11,7 +11,7 @@
         android:theme="@android:style/Theme.Material.Light.NoActionBar"
         android:usesCleartextTraffic="false">
         <activity
-            android:name=".V1ReaderActivity"
+            android:name=".SoftReaderActivity"
             android:exported="true"
             android:screenOrientation="unspecified">
             <intent-filter>
@@ -19,6 +19,10 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".V1ReaderActivity"
+            android:exported="false" />
 
         <service
             android:name=".playback.StoryPlaybackService"
