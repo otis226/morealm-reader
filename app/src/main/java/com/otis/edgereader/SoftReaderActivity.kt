@@ -1014,11 +1014,11 @@ class SoftReaderActivity : Activity() {
                     else -> "Chạm để chọn file audio"
                 },
                 icon = if (selected) "✓" else slot.symbol,
-            ) {
-                dialog.dismiss()
-                selectAmbient(slot)
-            },
-        )
+            )
+        ) {
+            dialog.dismiss()
+            selectAmbient(slot)
+        }
     }
 
     private fun settingSlider(
@@ -1263,7 +1263,7 @@ class SoftReaderActivity : Activity() {
         val title: String,
         val subtitle: String,
         val icon: String,
-        val onClick: () -> Unit,
+        val onClick: () -> Unit = {},
     )
 
     private enum class SettingsFocus { TOP, SPEED, AMBIENT }
