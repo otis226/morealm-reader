@@ -27,7 +27,7 @@ class V1AndroidSmokeTest {
 
     @Test
     fun readerActivityLaunchesWithoutCrash() {
-        ActivityScenario.launch(V1ReaderActivity::class.java).use { scenario ->
+        ActivityScenario.launch(SoftReaderActivity::class.java).use { scenario ->
             scenario.onActivity { activity ->
                 assertFalse(activity.isFinishing)
             }
@@ -39,8 +39,6 @@ class V1AndroidSmokeTest {
         val token = SessionToken(context, ComponentName(context, StoryPlaybackService::class.java))
         val controllerFuture = MediaController.Builder(context, token).buildAsync()
         try {
-            // Await connection from the instrumentation worker thread. MediaController itself is
-            // main-looper-bound, so commands must be issued on that application looper.
             val controller = controllerFuture.get(15, TimeUnit.SECONDS)
             val commandFuture = AtomicReference<ListenableFuture<SessionResult>>()
             InstrumentationRegistry.getInstrumentation().runOnMainSync {
